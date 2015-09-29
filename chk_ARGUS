@@ -1,0 +1,186 @@
+#! /bin/bash
+#
+# chk_ARGUS is used to run an automated test on an ARGUS instance
+# Copyright (C) 2011-2015  Miguel Gila
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+#
+
+
+VERSION='0.1'
+
+LIBS_LOCATION="chk_LIBS"
+
+if [ ! -e ${LIBS_LOCATION} -a ! -r ${LIBS_LOCATION} ]; then
+	echo "ERROR, we need to have access to ${LIBS_LOCATION}"
+	echo "Cannot continue. Quitting."
+	exit -1
+fi
+
+. ${LIBS_LOCATION}
+
+#### Functions ####
+
+# ******************************************************************************
+# MAIN
+# ******************************************************************************
+# Default variables
+
+WAIT_TIME=5
+
+DEBUG_LEVEL=0
+FAIL=0
+
+mod_list=" (none) "
+proxy_subject="NOTVALID!!!!!"
+DOMAIN="."$(/bin/hostname -d)
+ARGUS_HOST="cream01$DOMAIN"
+
+user=`id -un`
+TEST_ID=`hostname -f`-`date +%y%m%d%H%M%N`
+
+STDERR_STRING="/tmp/stderr.$TEST_ID"
+STDOUT_STRING="/tmp/stdout.$TEST_ID"
+
+# Called always at the beginning
+Colors;
+
+myecho  "${BlueF}*******************************************"
+myecho  "   ARGUS Testing Tools   "
+myecho  "*******************************************${Reset}"
+usage="This program runs tests on a ARGUS server.
+\nUse:\n
+$0 [-c|--hostname ARGUS_HOST] [-d|--debug_level DEBUG_LEVEL] [-h] \n
+\n
+ ARGUS_HOST\t Test an specific host\n
+ DEBUG_LEVEL \t Debug information level 0=info,1=debug,2=extradebug (default 0)\n
+\nExamples:\n
+"
+
+SHORTOPTS="c:d:h"
+LONGOPTS="help hostname: debug_level:"
+
+ARGS=$(getopt -s bash -n$0 --options $SHORTOPTS  --longoptions $LONGOPTS -- "$@" )
+
+eval set -- "$ARGS"
+
+while [ $# -gt 0 ]
+do
+	debecho2 "Iteration, param1=$1, param2=$2"
+	case "$1" in
+
+	    -h | --help)
+	    		echo -e $usage
+				exit 1;;
+
+    	-d | --debug_level)
+    			DEBUG_LEVEL=$2;shift;
+    			debecho "Setting DEBUG_LEVEL to $DEBUG_LEVEL"
+    			continue;;
+
+    	-c | --hostname)
+    			ARGUS_HOST=$2;shift;
+    			debecho "Setting ARGUS_HOST to ${ARGUS_HOST}"
+    			continue;;
+
+    	-- )	shift;continue;;
+
+	    -* )   myecho-e $usage
+	        	exit 1;;
+	esac
+	shift
+done
+debecho "Done setting options"
+
+debecho "Setting default variables"
+glexec_ops=""
+CAPATH="/etc/grid-security/certificates/"
+CREAMCE_RESOURCEID="http://lcg.cscs.ch/xacml/resource/resource-type/creamce"
+CREAMCE_ACTIONID="http://glite.org/xacml/action/execute"
+GLEXEC_RESOURCEID="http://authz-interop.org/xacml/resource/resource-type/wn"
+GLEXEC_ACTIONID="http://glite.org/xacml/action/execute"
+ARGUS_QUERY_URL="https://${ARGUS_HOST}:8154/authz"
+
+debecho "ARGUS_QUERY_URL=${ARGUS_QUERY_URL}"
+debecho "glexec_ops=${glexec_ops}"
+debecho "CAPATH=${CAPATH}"
+debecho "GLEXEC_RESOURCEID=${GLEXEC_RESOURCEID}"
+debecho "GLEXEC_RESOURCEID=${GLEXEC_RESOURCEID}"
+debecho "CREAMCE_ACTIONID=${CREAMCE_ACTIONID}"
+debecho "CREAMCE_ACTIONID=${CREAMCE_ACTIONID}"
+
+
+if [ "$DEBUG_LEVEL" -ge 1 ]; then
+	debecho2 "Setting the verbose option for external commands."
+    glexec_ops="--verbose"
+fi
+
+if [ "$DEBUG_LEVEL" -ge 2 ]; then
+	debecho2 "Setting the debug option for external commands."
+    glexec_ops="--debug"
+fi
+
+debecho "Checking whether the user has a valid proxy."
+voms-proxy-info -exists $voms_proxy_info_ops
+if [ $? -eq 1 ]; then
+  debecho "The user proxy does not exist, trying to create one..."
+  voms-proxy-init --voms $DEFAULT_VO -valid 24:0 $voms_proxy_init_ops
+  if [ $? -ne 0 ]; then
+    errorexit
+  else
+    debecho "User proxy successfully created!"
+    echo
+  fi
+fi
+
+debecho "Getting the subject of the user's certificate"
+proxy_subject=$(voms-proxy-info --subject)
+debecho "The subject of the user's certificate is: $proxy_subject"
+
+myecho
+myecho "Version: ${VERSION}"
+myecho "Running as user: $user"
+myecho "Current dir: $PWD"
+myecho "Info level: $DEBUG_LEVEL"
+myecho "TestID: $TEST_ID"
+myecho "User certificate: $proxy_subject"
+myecho "ARGUS Server to query: $ARGUS_HOST"
+myecho "ARGUS QUERY URL: ${ARGUS_QUERY_URL}"
+
+myecho
+#echo "*** Starting job in $WAIT_TIME seconds, press Ctrl+C to cancel ***"
+myecho "${BlueF}*** Starting job in $WAIT_TIME seconds, press Ctrl+C to cancel ***${Reset}"
+sleep $WAIT_TIME
+myecho
+
+infoecho "Testing ARGUS glexec"
+/usr/bin/pepcli ${glexec_ops} --pepd "${ARGUS_QUERY_URL}" --resourceid "${GLEXEC_RESOURCEID}" --actionid "${GLEXEC_ACTIONID}"  --capath ${CAPATH} --cert $X509_USER_PROXY --key $X509_USER_PROXY  --certchain $X509_USER_PROXY 2>&1
+result=$?
+infoecho "Done with glexec on ${ARGUS_HOST}"
+
+if [ ${result} -eq 0 ]; then
+	infoecho "${GreenF}The result for GLEXEC on ${ARGUS_HOST} seems to be [OK]${Reset}"
+fi
+
+infoecho "Testing ARGUS CREAM-CE"
+/usr/bin/pepcli ${glexec_ops} --pepd "${ARGUS_QUERY_URL}" --resourceid "${CREAMCE_RESOURCEID}" --actionid "${CREAMCE_ACTIONID}"  --capath ${CAPATH} --cert $X509_USER_PROXY --key $X509_USER_PROXY  --certchain $X509_USER_PROXY 2>&1
+result=$?
+infoecho "Done with creamce on ${ARGUS_HOST}"
+
+if [ ${result} -eq 0 ]; then
+	infoecho "${GreenF}The result for CREAMCE on ${ARGUS_HOST} seems to be [OK]${Reset}"
+fi
+
+myecho

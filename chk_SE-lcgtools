@@ -1,0 +1,275 @@
+#!/bin/bash
+# chk_SE-lcgtools is used to test transfers to any WLCG SE.
+# Copyright (C) 2011-2015  Miguel Gila
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+#
+
+echo  "*******************************************"
+echo  "   Test of the LCG Data Management Tools   "
+echo  "*******************************************"
+FAIL=0
+
+# Default values
+TEST_ID=`hostname -f`-`date +%y%m%d%H%M%N`
+REPORT_FILE=/tmp/report.${TEST_ID}.txt
+user=`id -un`
+VO=`voms-proxy-info -vo`
+SE="DUMMY"
+STREAMS=5
+SIZE=0
+TIMEOUT=600
+MYSITE="DUMMY"
+#LFC_HOST=prod-lfc-shared-central.cern.ch
+#LFC_HOST=lfc-fzk.gridka.de
+
+usage="Use:\n
+$0 [-v VO] [-d SE] [-b BDIItop_host] [-l LFC_host] [-f lfn] [-t space_token] [-o report_file] [-n streams] [-s size(MB)] [-x timeout(s)] [-h]\n
+\n
+ VO\t\t Specify the VO to use. Defaults to `voms-proxy-info -vo`.\n
+ SE\t\t Target SE host. It can also be the target file using this\n
+\t\t syntax: srm://srmhost.domain:8443/pnfs/ft.uam.es/data/file_7\n
+ BDIItop_host\t Hostname (without port) to place the ldap queries to.\n
+\t\t defaults to \$LCG_GFAL_INFOSYS\n
+ LFC_host\t Use an specific host for LFC catalog (default to \$LFC_HOST or then `lcg-infosites lfc --vo atlas`)\n
+ lnf \t\t LFC file to register (eg. /grid/atlas/uam/file_7)\n
+ space_token \t Name of the token to use. Defaults to none.\n
+ streams\t Use a fixed number of streams for the transfer. Defaults to 5.\n
+ size(MB)\t Fill up the file to be copied with certain amount of Megabytes\n
+ LFC_host \t Hostname for the LFC catalog\n\n
+"
+
+# Lets change the default parameters
+while getopts "v:d:b:f:t:o:s:n:x:l:h" options; do
+  case $options in
+    v ) VO=$OPTARG;;
+    d ) SE=$OPTARG;;
+    b ) LCG_GFAL_INFOSYS=$OPTARG:2170;;
+    f ) myLFN=$OPTARG;;
+    t ) TOKEN=$OPTARG
+	opts_cr="-s $TOKEN";;
+    o ) REPORT_FILE=$OPTARG;;
+    n ) STREAMS=$OPTARG;;
+    s ) SIZE=$OPTARG;;
+    x ) TIMEOUT=$OPTARG;;
+    l ) LFC_HOST=$OPTARG;;
+    h ) echo -e $usage
+	exit 1;;
+    * ) echo -e $usage
+        exit 1;;
+  esac
+done
+
+LFC_HOST=${LFC_HOST:-`lcg-infosites --vo $VO lfc||echo Problem with finding LFC`}
+
+opts="-v --vo $VO"
+myLFN="/grid/$VO/$MYSITE/test-$user-$TEST_ID"
+
+echo "Running as user: $user"
+echo "Test Id: $TEST_ID"
+echo "BDII top: $LCG_GFAL_INFOSYS"
+echo "LFC host: $LFC_HOST"
+echo "VO: $VO"
+echo "SE: $SE"
+echo "Space Token: $TOKEN"
+echo "Parallel streams: $STREAMS"
+echo "Aditional size: $SIZE MB"
+echo "Report file: $REPORT_FILE"
+echo "Timeout: $TIMEOUT s"
+echo "LFN: $myLFN"
+
+export LFC_HOST=$LFC_HOST
+
+# We can only query the first in the list:
+INFOSYS=`echo $LCG_GFAL_INFOSYS | sed 's/,.*//'`
+
+echo
+echo "*** Querying the Information System: $INFOSYS"
+result=0
+rm $REPORT_FILE
+
+# Free space in VO?
+FREE_SPACE=`ldapsearch -LLL -x -h $INFOSYS -b o=grid "(&(GlueChunkKey=GlueSEUniqueID=$SE)(GlueSAAccessControlBaseRule=VO:$VO))" GlueSAStateAvailableSpace | grep '^Glue' | cut -f 2 -d ' ' | head -n 1`
+if [ "0$FREE_SPACE" -lt 1000 ]; then
+    result=1
+fi
+
+# Doors published
+SRM_DOORS=`ldapsearch -LLL -x -h $INFOSYS -b o=grid "(&(GlueChunkKey=GlueSEUniqueID=$SE)(GlueSEControlProtocolType=SRM))" GlueSEControlProtocolEndpoint | awk '/^Glue/ {printf "%s ",$2}' | sed 's|httpg://||g'`
+if [ "x$SRM_DOORS" == "x" ]; then
+    result=1
+fi
+
+GSIFTP_DOORS=`ldapsearch -LLL -x -h $INFOSYS -b o=grid "(&(GlueChunkKey=GlueSEUniqueID=$SE)(GlueSEAccessProtocolType=gsiftp))" GlueSEAccessProtocolEndpoint | awk '/^Glue/ {printf "%s ",$2}' | sed 's|gsiftp://||g'`
+if [ "x$GSIFTP_DOORS" == "x" ]; then
+    result=1
+fi
+
+DCAP_DOORS=`ldapsearch -LLL -x -h $INFOSYS -b o=grid "(&(GlueChunkKey=GlueSEUniqueID=$SE)(GlueSEAccessProtocolType=dcap))" GlueSEAccessProtocolEndpoint | awk '/^Glue/ {printf "%s ",$2}' | sed 's|dcap://||g'`
+GSIDCAP_DOORS=`ldapsearch -LLL -x -h $INFOSYS -b o=grid "(&(GlueChunkKey=GlueSEUniqueID=$SE)(GlueSEAccessProtocolType=gsidcap))" GlueSEAccessProtocolEndpoint | awk '/^Glue/ {printf "%s ",$2}' | sed 's|gsidcap://||g'`
+XROOTD_DOORS=`ldapsearch -LLL -x -h $INFOSYS -b o=grid "(&(GlueChunkKey=GlueSEUniqueID=$SE)(GlueSEAccessProtocolType=root))" GlueSEAccessProtocolEndpoint | awk '/^Glue/ {printf "%s ",$2}' | sed 's|root://||g'`
+
+echo "Free space in VO $VO: $FREE_SPACE"
+echo "Doors srm: $SRM_DOORS"
+echo "Doors gsiftp: $GSIFTP_DOORS"
+echo "Doors gsidcap: $GSIDCAP_DOORS"
+echo "Doors dcap: $DCAP_DOORS"
+echo "Doors xrootd: $XROOTD_DOORS"
+echo
+
+if [ $result == 0 ]; then
+    echo "Information system seems to be OK"
+    echo "LDAP query:  PASS" >> $REPORT_FILE
+else
+    echo "Information system seems to be WRONG"
+    echo "LDAP query:  FAIL" >> $REPORT_FILE
+    FAIL=1
+fi
+
+echo
+echo "Generating source file..."
+lfname=/tmp/testFile.$TEST_ID.txt
+rm -rf $lfname
+cat << EOF > $lfname
+*******************************************
+Test Id: $TEST_ID
+VO: $VO
+SE: $SE
+Space Token: $TOKEN
+Parallel streams: $STREAMS
+Aditional size: $SIZE MB
+Report file: $REPORT_FILE
+Timeout: $TIMEOUT s
+LFN: $myLFN
+LFC_HOST: $LFC_HOST
+
+File used for the replica manager test
+*******************************************
+EOF
+if [ "$SIZE" != 0 ]; then
+   dd if=/dev/zero of=zero_mb count=1024 bs=1024
+   for i in `seq 1 $SIZE`; do
+      cat zero_mb >> $lfname
+   done
+   rm zero_mb
+fi
+
+
+echo
+echo "*** Starting job in 5 seconds, press Ctrl+C to cancel ***"
+sleep 5
+
+echo
+echo "*** COPY AND REGISTER A LOCAL FILE INTO THE SE ***"
+set -x
+time lcg-cr $opts $opts_cr -d $SE -l lfn:$myLFN -n $STREAMS -t $TIMEOUT file://$lfname
+result=$?
+set +x
+
+if [ $result == 0 ]; then
+    echo "*** Local file copied and registered to the default  SE."
+    echo "LCG copy and register to SE: PASS" >> $REPORT_FILE
+else
+    echo "*** Error: Could not copy and register the local file to the default SE."
+    echo "LCG copy and register to SE: FAIL"  >> $REPORT_FILE
+    FAIL=1
+fi
+
+echo
+echo "*** LISTING THE REPLICAS ***"
+set -x
+lcg-lr $opts lfn:$myLFN
+result=$?
+set +x
+
+if [ $result == 0 ]; then
+    echo "*** Replica listed."
+    echo "LCG list replica: PASS" >> $REPORT_FILE
+
+else
+    echo "*** Error: Can not list replicas."
+    echo "LCG list replica: FAIL" >> $REPORT_FILE
+    FAIL=1
+fi
+
+lf2=$lfname.2
+rm -rf $lf2
+
+echo
+echo "*** COPYING BACK THE FILE FROM THE SE ***"
+set -x
+time lcg-cp $opts lfn:$myLFN -n $STREAMS -t $TIMEOUT file://$lf2
+result=$?
+set +x
+
+if [ $result == 0 ]; then
+    echo "*** Got get file."
+    echo "LCG copy back from SE: PASS"  >> $REPORT_FILE
+else
+    echo "*** Error: Could not get the file."
+    echo "LCG copy back from SE: FAIL"  >> $REPORT_FILE
+    FAIL=1
+fi
+
+echo
+echo "*** COMPARING BOTH FILES ***"
+if [ "x`diff $lfname $lf2`" == "x" ]; then
+    echo "*** Files are the same."
+else
+    echo "*** Error: Files are different."
+    FAIL=1
+fi
+
+
+echo
+echo "*** CLEANING UP ***"
+rm -f $lfname $lf2
+
+# Si falla algo, no borramos (para ver lo que ha pasado)
+if [ $FAIL = 0 ]; then
+	echo "*** Remove the replica from the default SE."
+	set -x
+	lcg-del $opts -a lfn:$myLFN
+	result=$?
+	set +x
+	if [ $result == 0 ]; then
+	    echo "*** Deleted file."
+	    echo "LCG delete: PASS"  >> $REPORT_FILE
+	    else
+	    echo "*** Error: Could not do Delete."
+	    echo "LCG delete: FAIL"  >> $REPORT_FILE
+	    FAIL=1
+	fi
+else
+  	echo "*** PLEASE manually delete the file with:"
+	echo "lcg-del -v --vo $VO -a lfn:$myLFN"
+fi
+
+lcg-lr $opts lfn:$myLFN
+
+echo
+echo
+echo '*** SUMMARY REPORT ***'
+
+cat $REPORT_FILE
+echo
+if [ $FAIL = 1 ]; then
+    echo "LCG Data Manager Test Failed."
+    exit 1
+else
+    echo "LCG Data Test Passed."
+    exit 0
+fi
+

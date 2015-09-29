@@ -1,0 +1,528 @@
+#! /bin/bash
+#
+# chk_CREAMCE  is used to run and fetch output of a test job on a CREAM-CE.
+# Copyright (C) 2011-2015  Miguel Gila
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+#
+
+VERSION='0.90'
+
+LIBS_LOCATION="chk_LIBS"
+
+if [ ! -e ${LIBS_LOCATION} -a ! -r ${LIBS_LOCATION} ]; then
+	echo "ERROR, we need to have access to ${LIBS_LOCATION}"
+	echo "Cannot continue. Quitting."
+	exit -1
+fi
+
+. ${LIBS_LOCATION}
+
+#### Functions ####
+cleanup () {
+	if [ -f $FILE_JOB ]; then
+	  infoecho "Cleaning up $FILE_JOB"
+	  rm -f $FILE_JOB
+	fi
+	if [ -f $FILE_STDOUT ]; then
+	  infoecho "Cleaning up all stdout files..."
+	  `rm -rf $STDOUT_STRING*`
+	fi
+
+	if [ -f $FILE_STDERR ]; then
+	  infoecho "Cleaning up all stderr files..."
+	  `rm -rf $STDERR_STRING*`
+	fi
+
+	infoecho "Cleaning up all $TEST_ID files"
+	`rm -rf $TEST_ID*`
+}
+
+# ******************************************************************************
+# JOB definition functions
+# ******************************************************************************
+create_job_type_glexec (){
+    infoecho "Creating temporary job =$JOB_TYPE_GLEXEC_ID= file in $FILE_JOB"
+    debecho "JDL creation..."
+
+# Let's create the JDL file
+    debecho "JDL creation ($FILE_JOB)..."
+    script_file=$TEST_ID"_glexec_command.sh"
+    cat > $FILE_JOB << EOF
+[
+Executable="$script_file";
+InputSandbox = {"$script_file"};
+StdOutput = "stdout.out";
+StdError = "stderr.out";
+OutputSandbox = {"stdout.out", "stderr.out"};
+OutputSandboxBaseDestURI = "gsiftp://localhost";
+]
+EOF
+
+# Let's create the script file referenced in the jdl
+    debecho "SCRIPT creation ($script_file)..."
+    debecho "Adding header..."
+    cat > "$script_file" << "EOF"
+#!/bin/bash
+myecho
+myecho "*** START ***"
+VOMSINFO=`which voms-proxy-info`
+#TARGET_USER_PROXY=/tmp/other.proxy
+export TARGET_USER_PROXY=$PWD/other.proxy
+
+cp -v $X509_USER_PROXY $TARGET_USER_PROXY
+ls -lha $TARGET_USER_PROXY
+export X509_USER_PROXY=$TARGET_USER_PROXY
+export GLEXEC_CLIENT_CERT=$TARGET_USER_PROXY
+export GLEXEC_SOURCE_PROXY=$TARGET_USER_PROXY
+
+myecho "*** Running on `/bin/hostname`"
+myecho "*** Standard output:"
+/usr/bin/id -a;myecho$?
+$VOMSINFO -all
+myecho
+myecho "*** Environment variables:"
+/bin/env
+myecho
+myecho "*** GLexec output:"
+$GLEXEC_LOCATION/sbin/glexec $VOMSINFO -all
+$GLEXEC_LOCATION/sbin/glexec /usr/bin/id -a;myecho$?
+rm -rfv $TARGET_USER_PROXY
+myecho
+myecho "*** END ***"
+EOF
+    debecho "Done. The content of $script_file is: `cat $script_file`"
+}
+
+create_job_type_remote_command (){
+	infoecho "Creating temporary job =$JOB_TYPE_REMOTE_COMMAND_ID= file in ${FILE_JOB}"
+	debecho "JDL creation..."
+
+# Let's create the JDL file
+	debecho "JDL creation ($FILE_JOB)..."
+	script_file=$TEST_ID"_remote_command.sh"
+	cat > $FILE_JOB << EOF
+[
+Executable="$script_file";
+InputSandbox = {"$script_file"};
+StdOutput = "stdout.out";
+StdError = "stderr.out";
+OutputSandbox = {"stdout.out", "stderr.out"};
+OutputSandboxBaseDestURI = "gsiftp://localhost";
+]
+EOF
+
+# Let's create the script file referenced in the jdl
+	debecho "SCRIPT creation ($script_file)..."
+	debecho "Adding header..."
+	cat > "$script_file" << EOF
+#!/bin/bash
+$REMOTE_COMMAND $PARAMS
+EOF
+	debecho "Done. The content of $script_file is: `cat $script_file`"
+}
+
+create_job_type_local_command (){
+    infoecho "Creating temporary job =$JOB_TYPE_LOCAL_COMMAND_ID= file in $FILE_JOB"
+    debecho "JDL creation..."
+
+if [ ! -r $LOCAL_COMMAND ]; then
+	errorecho "Cannot read $LOCAL_COMMAND"
+	errorexit
+fi
+
+# Let's create the JDL file
+    debecho "JDL creation ($FILE_JOB)..."
+    script_file=$TEST_ID"_local_command.sh"
+    debecho "Stripping the path from $LOCAL_COMMAND"
+    STRIPPED_LOCAL_COMMAND=$(basename "$LOCAL_COMMAND")
+    cat > $FILE_JOB << EOF
+[
+Executable="$script_file";
+InputSandbox = {"$script_file", "$LOCAL_COMMAND"};
+StdOutput = "stdout.out";
+StdError = "stderr.out";
+OutputSandbox = {"stdout.out", "stderr.out"};
+OutputSandboxBaseDestURI = "gsiftp://localhost";
+]
+EOF
+    debecho "Done with the jdl file: `cat $FILE_JOB`"
+# Let's create the script file referenced in the jdl
+    debecho "SCRIPT creation ($script_file)..."
+    debecho "Adding header..."
+    cat > "$script_file" << EOF
+#!/bin/bash
+ls -lhaF ./
+chmod +x ./$STRIPPED_LOCAL_COMMAND
+./$STRIPPED_LOCAL_COMMAND $PARAMS
+EOF
+    debecho "Done. The content of $script_file is: `cat $script_file`"
+}
+
+
+create_job_type_hostname (){
+	infoecho "Creating temporary job =$JOB_TYPE_HOSTNAME_ID= file in $FILE_JOB"
+	debecho "JDL creation..."
+	cat > $FILE_JOB << EOF
+[
+Executable="/bin/hostname";
+arguments="-f";
+StdOutput = "stdout.out";
+StdError = "stderr.out";
+OutputSandbox = {"stdout.out", "stderr.out"};
+OutputSandboxBaseDestURI = "gsiftp://localhost";
+]
+EOF
+}
+
+
+
+# ******************************************************************************
+# MAIN
+# ******************************************************************************
+# Default variables
+JOB_TYPE_HOSTNAME_ID="hostname"
+JOB_TYPE_GLEXEC_ID="glexec"
+JOB_TYPE_REMOTE_COMMAND_ID="remote command"
+JOB_TYPE_LOCAL_COMMAND_ID="local command"
+
+REMOTE_COMMAND=""
+LOCAL_COMMAND=""
+PARAMS=""
+
+WAIT_TIME=5
+
+DEBUG_LEVEL=0
+JOB_TYPE_ID=$JOB_TYPE_HOSTNAME_ID
+FAIL=0
+VO="invalid"
+DEFAULT_QUEUE="DEFAULT_QUEUE"
+QUEUE="cream-pbs-cscs"
+
+DEFAULT_VO='dteam'
+mod_list=" (none) "
+proxy_subject="NOTVALID!!!!!"
+DOMAIN="."$(/bin/hostname -d)
+CREAMCE_HOST="cream01$DOMAIN"
+GET_CE_FROM_INFOSYS=1
+BDII="bdii$DOMAIN"
+
+user=`id -un`
+TEST_ID=`hostname -f`-`date +%y%m%d%H%M%N`
+
+STDERR_STRING="/tmp/stderr.$TEST_ID"
+STDOUT_STRING="/tmp/stdout.$TEST_ID"
+
+# Called always at the beginning
+Colors;
+
+myecho  "${BlueF}*******************************************"
+myecho  "   CREAM-CE Testing Tools   "
+myecho  "*******************************************${Reset}"
+usage="This program runs tests on a CREAM-CE. The default test (w/o parameters) is to run /bin/hostname on the destination WN.
+\nUse:\n
+$0 [-r|--remote REMOTE_COMMAND] [-l|--local LOCAL_COMMAND -p|--params LOCALPARAMS]  [-c|--hostname CREAMCE_HOST] [-d|--debug_level DEBUG_LEVEL] [-q|--queue QUEUE] [-b|--bdii BDII] [--glexec] [-h] \n
+\n
+ REMOTE_COMMAND Command parameters existent in the destination WN. To add parameters, quote the command name and the parameters.\n
+ LOCAL_COMMAND Command parameters existent in the local machine. To add parameters, use LOCALPARAMS.\n
+ CREAMCE_HOST\t Test an specific host \n
+ DEBUG_LEVEL \t Debug information level 0=info,1=debug,2=extradebug (default 0)\n
+ QUEUE \t\t Queue relative to CREAMCE_HOST. The default is to query lcg-infosites\n
+ BDII \t\t BDII server. Default is $BDII\n
+ --glexec \t\t Runs ONLY the glexec test, ignoring all other commands (REMOTE_COMMAND & LOCAL_COMMAND)\n
+\nExamples:\n
+ - To run the hostname job type on host ppcream02:\n
+\t$0 -c ppcream02.lcg.cscs.ch\n
+ - To run a local filename in the remote WN:\n
+\t$0 -l /bin/hostname -p '-a' -c ppcream02.lcg.cscs.ch -d 1\n
+ - To run a remote executable and a bunch of other scripts in the remote WN with debug set to 1:\n
+\t$0 -r '/bin/uname -a; /bin/env;myecho"HI!"; who; finger; tail /var/log/messages; df -h; mount -l' -c ppcream02.lcg.cscs.ch -d 1\n
+
+"
+
+SHORTOPTS="c:d:r:l:p:q:b:h"
+LONGOPTS="help hostname: glexec debug_level: queue: bdii: remote: local: params:"
+
+ARGS=$(getopt -s bash -n$0 --options $SHORTOPTS  --longoptions $LONGOPTS -- "$@" )
+
+eval set -- "$ARGS"
+
+while [ $# -gt 0 ]
+do
+	debecho2 "Iteration, param1=$1, param2=$2"
+	case "$1" in
+
+	    -h | --help)
+	    		echo -e $usage
+				exit 1;;
+
+    	-d | --debug_level)
+    			DEBUG_LEVEL=$2;shift;
+    			debecho "Setting DEBUG_LEVEL to $DEBUG_LEVEL"
+    			continue;;
+
+    	-c | --hostname)
+    			LIST_OF_CREAMS=$2;shift;
+    			GET_CE_FROM_INFOSYS=0;
+    			debecho "Setting LIST_OF_CREAMS to $LIST_OF_CREAMS"
+    			continue;;
+
+    	-r | --remote )
+    			JOB_TYPE_ID=$JOB_TYPE_REMOTE_COMMAND_ID;
+    			REMOTE_COMMAND="$2";
+    			debecho "Setting JOB_TYPE_ID to $JOB_TYPE_ID"
+    			shift;
+    			continue;;
+
+        -l | --local )
+                JOB_TYPE_ID=$JOB_TYPE_LOCAL_COMMAND_ID;
+                LOCAL_COMMAND="$2";
+                debecho "Setting JOB_TYPE_ID to $JOB_TYPE_ID"
+                shift;
+                continue;;
+
+        -p | --params )
+                PARAMS="$2";
+                debecho "Setting PARAMS to $PARAMS"
+                shift;shift;
+                continue;;
+
+        --glexec )
+                JOB_TYPE_ID=$JOB_TYPE_GLEXEC_ID;
+                shift;
+                debecho "Setting JOB_TYPE_ID to $JOB_TYPE_ID"
+                continue;;
+
+    	-q | --queue )
+    			QUEUE=$2;shift;
+				debecho "Setting QUEUE to $QUEUE"
+    			continue;;
+
+    	-b | --bdii )
+    			BDII=$2;shift
+    			debecho "Setting BDII to $BDII"
+    			continue;;
+
+    	-- )	shift;continue;;
+
+	    -* )   myecho-e $usage
+	        	exit 1;;
+	esac
+	shift
+done
+debecho "Done setting options"
+voms_proxy_info_ops=""
+voms_proxy_init_ops=""
+glite_ce_job_submit_ops=""
+glite_ce_job_status_ops=""
+
+if [ "$DEBUG_LEVEL" -ge 2 ]; then
+	debecho2 "Setting the debug/extra verbose options for external commands."
+	voms_proxy_info_ops=" -debug "
+	voms_proxy_init_ops=" -debug "
+	glite_ce_job_submit_ops=" --debug "
+	glite_ce_job_status_ops=" --debug "
+
+fi
+
+debecho "Checking whether the user has a valid proxy."
+voms-proxy-info -exists $voms_proxy_info_ops
+if [ $? -eq 1 ]; then
+  debecho "The user proxy does not exist, trying to create one..."
+  voms-proxy-init --voms $DEFAULT_VO -valid 24:0 $voms_proxy_init_ops
+  if [ $? -ne 0 ]; then
+    errorexit
+  else
+    debecho "User proxy successfully created!"
+    echo
+  fi
+fi
+
+debecho "Getting the VO from the user's certificate"
+VO=$(voms-proxy-info -vo)
+debecho "The selected VO is $VO"
+
+debecho "Getting the subject of the user's certificate"
+proxy_subject=$(voms-proxy-info --subject)
+debecho "The subject of the user's certificate is: $proxy_subject"
+
+if [ "$GET_CE_FROM_INFOSYS" -eq 1 ]; then
+	debecho "Obtaining the lit of CEs to query from the lcg-infosites"
+	debecho2 "lcg-infosites --vo $VO ce --is $BDII | grep $DOMAIN |awk '{print $6}'|awk -F':' '{print $1}' | tr '\n' ' '"
+	LIST_OF_CREAMS=$(lcg-infosites --vo $VO ce --is $BDII | grep $DOMAIN |grep -v himem |awk '{print $6}'|awk -F':' '{print $1}' | tr '\n' ' ')
+	debecho "The list of CREAMCEs chosen is this: $LIST_OF_CREAMS"
+else
+	debecho "There is no need to get the CREAMCE from lcg-infosites."
+fi
+
+myecho
+myecho "Version: ${VERSION}"
+myecho "Running as user: $user"
+myecho "Current dir: $PWD"
+myecho "Info level: $DEBUG_LEVEL"
+myecho "TestID: $TEST_ID"
+myecho "BDII: $BDII"
+myecho "User certificate: $proxy_subject"
+myecho "VO: $VO"
+myecho "CREAM-CEs to query: $LIST_OF_CREAMS"
+myecho "Job type: $JOB_TYPE_ID"
+if [ "$JOB_TYPE_ID" == "$JOB_TYPE_SCRIPT_ID" ]; then
+	echo "Modules to test: $mod_list"
+fi
+
+myecho
+#echo "*** Starting job in $WAIT_TIME seconds, press Ctrl+C to cancel ***"
+myecho "${BlueF}*** Starting job in $WAIT_TIME seconds, press Ctrl+C to cancel ***${Reset}"
+sleep $WAIT_TIME
+myecho
+
+# Lets create the JOB file
+infoecho "Creating the file with the job description"
+FILE_JOB="/tmp/job_test.$$.jdl"
+debecho "The job description file to be filled is is $FILE_JOB"
+touch $FILE_JOB
+
+if [ $? -ne 0 ]; then
+	errorecho "Cannot create job file. Quitting."
+	errorexit
+fi
+
+case "$JOB_TYPE_ID" in
+	$JOB_TYPE_HOSTNAME_ID )
+		create_job_type_hostname;;
+    $JOB_TYPE_GLEXEC_ID )
+        create_job_type_glexec;;
+	$JOB_TYPE_REMOTE_COMMAND_ID )
+	    create_job_type_remote_command;;
+    $JOB_TYPE_LOCAL_COMMAND_ID )
+        create_job_type_local_command;;
+	* )
+		create_job_type_hostname;;
+esac
+
+
+for CREAMCE_HOST in $LIST_OF_CREAMS; do
+	infoecho "Processing host $CREAMCE_HOST"
+
+	debecho "Querying the information system to obtain info about this host."
+	dummy=$(lcg-infosites --vo $VO ce -v 1 --is $BDII |grep -m 1 $CREAMCE_HOST)
+	if [ $? -ne 0 ]; then
+		infoecho "There is no info publised on $BDII about this host."
+	fi
+
+	debecho "Querying the information system to obtain the published queue for the vo $VO on this host"
+	INFOSYS_QUEUE=$(lcg-infosites --vo $VO ce -v 1 --is $BDII |grep -m 1 $CREAMCE_HOST)
+	if [ "$QUEUE" != "$INFOSYS_QUEUE" ]; then
+		warnecho "The selected queue ($QUEUE) does not match the published queue for this vo on this host ($INFOSYS_QUEUE)."
+	fi
+	infoecho "Selected Queue chosen for this host: $QUEUE"
+
+
+	infoecho "Launching test job to $CREAMCE_HOST"
+	myecho
+	myecho "${BlueF}*** Submitting job in $WAIT_TIME seconds, press Ctrl+C to cancel ***${Reset}"
+	#echo "*** Submitting job in $WAIT_TIME seconds, press Ctrl+C to cancel ***"
+	sleep $WAIT_TIME
+	infoecho "Submitting job... "
+        if [ "$DEBUG_LEVEL" -ge 1 ]; then
+          echo "Executing: glite-ce-job-submit $glite_ce_job_submit_ops -a -r $CREAMCE_HOST/$QUEUE $FILE_JOB"
+        fi
+	JOB_CONTACT=`glite-ce-job-submit $glite_ce_job_submit_ops -a -r $CREAMCE_HOST/$QUEUE $FILE_JOB`
+	if [ $? -ne 0 ]; then
+	  errorecho $JOB_CONTACT
+	  errorecho "Job submission problem, cancelling!"
+	  cleanup
+	  errorexit
+	fi
+
+	infoecho "The JOBID is this: $JOB_CONTACT"
+
+	infoecho "Waiting for the job to be finished."
+
+	echo -n "["
+	glite-ce-job-status $JOB_CONTACT | grep -q DONE
+	JOB_DONE=$?
+	count=0
+	while [ $JOB_DONE -eq 1 ]; do
+	 echo -n '.'
+	  /bin/sleep 1s
+	 echo -n '.'
+	  /bin/sleep 1s
+	  glite-ce-job-status $JOB_CONTACT | grep -e 'DONE\|CANCELLED\|ABORTED\|UNKNOWN' >> /dev/null
+	  JOB_DONE=$?
+
+	done
+	echo "]"
+	infoecho "Job done"
+
+	debecho "Fetching job finishing status"
+	JOB_STATUS=$(glite-ce-job-status $JOB_CONTACT |grep Status | awk -F'= ' '{print $2}')
+
+	if [ ${JOB_STATUS} == "[DONE-OK]" ]; then
+		infoecho "The job finished with the ${GreenF}${JOB_STATUS}${Reset} status."
+	else
+		infoecho "The job finished with the $JOB_STATUS status."
+	fi
+	echo $JOB_STATUS |grep 'DONE-OK'
+	if [ $? -eq 0 ]; then
+		GSI_ST=`glite-ce-job-status -L2 $JOB_CONTACT | awk  '/OSB/ { sub("[[]",""); sub("[]]",""); print $5}'`/
+		GSI_STDOUT=$GSI_ST/stdout.out
+		GSI_STDERR=$GSI_ST/stderr.out
+
+		FILE_STDERR="`mktemp $STDERR_STRING.XXXX`"
+		debecho "Created temporary file for STDERR $FILE_STDERR"
+
+		FILE_STDOUT="`mktemp $STDOUT_STRING.XXXX`"
+		debecho "Created temporary file for STDOUT $FILE_STDOUT"
+
+		debecho "Trying to get STDERR output with globus-url-copy"
+		globus-url-copy -vb $GSI_STDERR file://$FILE_STDERR
+
+		debecho "Trying to get STDOUT output with globus-url-copy"
+		globus-url-copy -vb $GSI_STDOUT file://$FILE_STDOUT
+
+		infoecho "Contents of stdout:"
+		echo "--------------------------------------------------------------------"
+		cat $FILE_STDOUT
+		echo "--------------------------------------------------------------------"
+		echo
+
+		infoecho "Contents of stderr:"
+		echo "--------------------------------------------------------------------"
+		cat $FILE_STDERR
+		echo "--------------------------------------------------------------------"
+		echo
+		if [ -f $FILE_STDOUT ]; then
+		  infoecho "Cleaning up $FILE_STDOUT"
+		  rm -f $FILE_STDOUT
+		fi
+
+		if [ -f $FILE_STDERR ]; then
+		  infoecho "Cleaning up $FILE_STDERR"
+		  rm -f $FILE_STDERR
+		fi
+	else
+		infoecho "Since the job did ${RedF}not finish ok${Reset}, check the glite-ce-job-status -L2 output to debug the cause of the failure"
+		glite-ce-job-status -L2 $JOB_CONTACT
+	fi
+
+
+	infoecho "Done with $CREAMCE_HOST"
+	if [ ${JOB_STATUS} == "[DONE-OK]" ]; then
+		infoecho "${GreenF}The final result for ${CREAMCE_HOST} is [DONE-OK]${Reset}"
+	fi
+done
+
+cleanup

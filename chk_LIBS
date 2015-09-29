@@ -1,0 +1,86 @@
+#! /bin/bash
+#
+# chk_LIBS  is sourced by wlcg_checks scripts
+# Copyright (C) 2011-2015  Miguel Gila
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+#
+
+
+#### Functions ####
+Colors() {
+	Escape="\033";
+
+	BlackF="${Escape}[30m";   RedF="${Escape}[31m";   GreenF="${Escape}[32m";
+	YellowF="${Escape}[33m";  BlueF="${Escape}[34m";    Purplef="${Escape}[35m";
+	CyanF="${Escape}[36m";    WhiteF="${Escape}[37m";
+
+	BlackB="${Escape}[40m";     RedB="${Escape}[41m";     GreenB="${Escape}[42m";
+	YellowB="${Escape}[43m";    BlueB="${Escape}[44m";    PurpleB="${Escape}[45m";
+	CyanB="${Escape}[46m";      WhiteB="${Escape}[47m";
+
+	BoldOn="${Escape}[1m";      BoldOff="${Escape}[22m";
+	ItalicsOn="${Escape}[3m";   ItalicsOff="${Escape}[23m";
+	UnderlineOn="${Escape}[4m";     UnderlineOff="${Escape}[24m";
+	BlinkOn="${Escape}[5m";   BlinkOff="${Escape}[25m";
+	InvertOn="${Escape}[7m";  InvertOff="${Escape}[27m";
+
+	Reset="${Escape}[0m";
+}
+
+myecho () {
+	echo -e "$1"
+}
+
+warnecho () {
+  if [ "$DEBUG_LEVEL" -ge 0 ]; then
+    myecho "${RedF}[WARN] $1${Reset}"
+  fi
+}
+
+infoecho () {
+  if [ "$DEBUG_LEVEL" -ge 0 ]; then
+    myecho "[INFO] $1"
+  fi
+}
+
+infoecho () {
+  if [ "$DEBUG_LEVEL" -ge 0 ]; then
+    myecho "[INFO] $1"
+  fi
+}
+
+debecho () {
+  if [ "$DEBUG_LEVEL" -ge 1 ]; then
+    #myecho "[DEBUG] $1"
+    myecho "${CyanF}[DEBUG] $1${Reset}"
+  fi
+}
+
+debecho2 () {
+  if [ "$DEBUG_LEVEL" -ge 2 ]; then
+    #myecho "[DEBUG2] $1"
+    myecho "${CyanF}[DEBUG2] $1${Reset}"
+  fi
+}
+errorecho () {
+  #echo "[ERROR] $1"
+ myecho "${RedF}${BoldOn}[ERROR] $1${Reset}"
+}
+
+errorexit () {
+  errorecho "Impossible to continue, quitting"
+  exit -1
+}
